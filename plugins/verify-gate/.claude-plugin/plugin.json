@@ -1,6 +1,6 @@
 {
   "name": "verify-gate",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "コードを変えたのに検証していない状態をステータス行に示し、ターン終了やコミットの前に注意するか止める",
   "author": {
     "name": "tanabe1478",

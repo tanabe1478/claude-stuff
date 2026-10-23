@@ -6,7 +6,7 @@ import { expect, test } from 'claude-code/testing'
 test('起動時に登録した status ツールは、設定ファイルがなければ無効だと答える', async $ => {
   const ran = await $.tool.call({ tool: 'mcp__verify-gate__status' })
   expect(ran.deny).toBeUndefined()
-  expect(String((ran.result as { text?: string } | undefined)?.text ?? ran.text ?? '')).toContain('.claude/verify-gate.json')
+  expect(String(ran.result ?? ran.text ?? '')).toContain('.claude/verify-gate.json')
 })
 
 test('起動時に登録した /verify-status は、設定ファイルがなければ無効だと答える', async $ => {

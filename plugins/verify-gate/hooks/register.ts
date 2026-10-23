@@ -188,15 +188,14 @@ export const register: Register = on => {
 
   on('tool.call', { tool: 'mcp__verify-gate__run' }, async $ => {
     const { exitCode, text } = await runVerification($)
-    return exitCode === 0 ? { result: { text } } : { result: { text }, isError: true as const }
+    return exitCode === 0 ? { result: text } : { result: text, isError: true as const }
   })
 
   on('tool.call', { tool: 'mcp__verify-gate__status' }, async $ => {
     const status = await refresh($)
     return {
-      result: {
-        text: status.configured ? JSON.stringify(status, null, 2) : 'verify-gate: このプロジェクトには .claude/verify-gate.json がありません',
-      },
+      result: status.configured ? `${statusLine(status) ?? ''}
+${JSON.stringify(status, null, 2)}` : 'verify-gate: このプロジェクトには .claude/verify-gate.json がありません',
     }
   })
 
@@ -208,9 +207,9 @@ export const register: Register = on => {
     const args = item ? ['manual', item, '--reason', reason] : ['stamp', '--reason', reason]
     const { exitCode, stdout, stderr } = await gate($, args)
     const after = await refresh($)
-    if (exitCode !== 0) return { result: { text: `verify-gate: 記録できませんでした。${stderr || stdout}` }, isError: true as const }
+    if (exitCode !== 0) return { result: `verify-gate: 記録できませんでした。${stderr || stdout}`, isError: true as const }
     const label = item ? `手動の確認 ${item} を自己申告として記録しました。` : '自動の検証を手動で記録しました（検証コマンドは実行していません）。'
-    return { result: { text: `verify-gate: ${label}${statusLine(after) ?? ''}` } }
+    return { result: `verify-gate: ${label}${statusLine(after) ?? ''}` }
   })
 
   on('command.run', { command: 'verify' }, async $ => {
