@@ -10,6 +10,11 @@
       "name": "verify-gate",
       "source": "./plugins/verify-gate",
       "description": "コードを変えたのに検証していない状態をステータス行に示し、ターン終了やコミットの前に注意するか止める"
+    },
+    {
+      "name": "todos",
+      "source": "./plugins/todos",
+      "description": "依頼されたことや確認すべきことを Todo として残し、/todos の画面と AI 向けの todo ツールで扱う"
     }
   ]
 }

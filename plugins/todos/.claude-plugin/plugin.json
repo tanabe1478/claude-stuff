@@ -1,0 +1,11 @@
+{
+  "name": "todos",
+  "version": "0.1.0",
+  "description": "依頼されたことや確認すべきことを Todo として残し、/todos の画面と AI 向けの todo ツールで扱う",
+  "author": {
+    "name": "tanabe1478",
+    "url": "https://github.com/tanabe1478"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
