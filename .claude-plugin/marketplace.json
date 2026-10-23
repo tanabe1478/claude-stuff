@@ -1,0 +1,15 @@
+{
+  "name": "claude-stuff",
+  "description": "自分用のClaude Code拡張（mod、プラグイン）のマーケットプレイス",
+  "owner": {
+    "name": "tanabe1478",
+    "url": "https://github.com/tanabe1478"
+  },
+  "plugins": [
+    {
+      "name": "verify-gate",
+      "source": "./plugins/verify-gate",
+      "description": "コードを変えたのに検証していない状態をステータス行に示し、ターン終了やコミットの前に注意するか止める"
+    }
+  ]
+}

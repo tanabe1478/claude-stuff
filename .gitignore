@@ -1,0 +1,4 @@
+node_modules/
+# Claude Code がmodを読み込むときに置く型定義（生成物）
+plugins/*/.claude-plugin/types/
+plugins/*/tsconfig.json

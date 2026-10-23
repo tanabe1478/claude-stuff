@@ -1,0 +1,10 @@
+{
+  "name": "verify-gate",
+  "version": "0.1.0",
+  "description": "コードを変えたのに検証していない状態をステータス行に示し、ターン終了やコミットの前に注意するか止める",
+  "author": {
+    "name": "tanabe1478",
+    "url": "https://github.com/tanabe1478"
+  },
+  "license": "MIT"
+}
