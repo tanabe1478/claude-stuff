@@ -1,11 +1,24 @@
 // verify-gate の mod。判定そのものは bin/verify-gate.mjs（依存なしの Node スクリプト）に任せ、
 // ここでは Claude Code の中で「気づける」ようにする。
-// - ステータス行に「検証: 済み」「検証: 未実行（変更 n 件）」を出し続ける
-// - コードを編集した直後に、モデルへ検証の指示を注入する（同じ未検証の状態につき1度）
-// - ターン終了時に、未検証なら注意（warn）か、終了を止めて検証を求める（block）
-// - 未検証のまま git commit しようとしたら、注意（warn）か拒否（block）
+// - ステータス行に「検証: 済み」「検証: 自動 未実行 / 手動 未実施 n 件」を出し続ける
+// - コードを編集した直後に、必要な検証と手動確認をモデルへ一度だけ指示する
+// - 手動確認の証拠になるコマンド（通しテストなど）が成功したら、その項目を証拠付きで実施済みにする
+// - ターン終了時に、未実施があれば注意（warn）か、終了を止めて実施を求める（block）
+// - 未実施のまま git commit しようとしたら、注意（warn）か拒否（block）
 // プロジェクトに .claude/verify-gate.json がなければ何もしない。
 import type { EngineInterface, Register } from 'claude-code'
+
+type ManualItem = {
+  id: string
+  title: string
+  due: boolean
+  changed: string[]
+  satisfiedBy: 'baseline' | 'evidence' | 'stamp' | null
+  satisfiedAt: string | null
+  reason: string | null
+  evidenceCommands: string[]
+  evidenceFiles: string[]
+}
 
 type Status =
   | { configured: false }
@@ -13,11 +26,13 @@ type Status =
       configured: true
       mode: 'warn' | 'block' | 'off'
       verified: boolean
+      outstanding: boolean
       codeHash: string
       codeFiles: number
       changed: string[]
       verifiedAt: string | null
       verifiedBy: 'run' | 'stamp' | null
+      manual: ManualItem[]
       todo: string | null
       todoStale: boolean
       statePath: string
@@ -30,7 +45,7 @@ const COMMIT = /(^|[\s;&|])git\s+(?:[\w-]+\s+)*commit(\s|$)/
 const RUN_TIMEOUT_MS = 15 * 60_000
 
 let current: Status = { configured: false }
-// 同じ未検証の状態について、モデルへの指示は一度だけにする（編集のたびに繰り返さない）。
+// 同じ未実施の状態について、モデルへの指示は一度だけにする（編集のたびに繰り返さない）。
 let instructedFor: string | null = null
 
 async function gate($: EngineInterface, args: string[], timeoutMs = 30_000) {
@@ -41,7 +56,7 @@ async function gate($: EngineInterface, args: string[], timeoutMs = 30_000) {
 async function refresh($: EngineInterface): Promise<Status> {
   try {
     const { stdout, exitCode } = await gate($, ['status'])
-    // status は未検証のとき終了コード 1 を返すが、JSON は出ている。2 は設定の誤りなど。
+    // status は未実施があるとき終了コード 1 を返すが、JSON は出ている。2 は設定の誤りなど。
     if (exitCode > 1) throw new Error(stdout)
     current = JSON.parse(stdout.trim().split('\n').pop() ?? '{}') as Status
   } catch {
@@ -55,20 +70,46 @@ function isActive(status: Status): status is Active {
   return status.configured && status.mode !== 'off'
 }
 
+function dueItems(status: Active): ManualItem[] {
+  return status.manual.filter(item => item.due)
+}
+
+function outstandingKey(status: Active): string {
+  return `${status.verified ? 'ok' : status.codeHash}|${dueItems(status).map(item => item.id).join(',')}`
+}
+
 function statusLine(status: Status): string | undefined {
   if (!isActive(status)) return undefined
-  if (status.verified) return '検証: 済み'
-  const changed = status.changed.length > 0 ? `変更 ${status.changed.length}件` : 'コミット後に未実行'
-  return `検証: 未実行（${changed}${status.todoStale ? `、${status.todo} 未更新` : ''}）`
+  if (!status.outstanding) return '検証: 済み'
+  const parts: string[] = []
+  if (!status.verified) parts.push(`自動 未実行（変更 ${status.changed.length}件）`)
+  const due = dueItems(status)
+  if (due.length > 0) parts.push(`手動 未実施 ${due.length}件（${due.map(item => item.id).join(', ')}）`)
+  if (status.todoStale) parts.push(`${status.todo} 未更新`)
+  return `検証: ${parts.join(' / ')}`
 }
 
 function instruction(status: Active): string {
-  const todo = status.todo ? `そのうえで ${status.todo} の「動作確認の記録」に結果を書いてください。` : ''
-  const changed =
-    status.changed.length > 0
-      ? `変更: ${status.changed.slice(0, 8).join(', ')}${status.changed.length > 8 ? ' ほか' : ''}`
-      : '前回の検証のあとにコードが変わっています'
-  return `verify-gate: コードが変わっていますが、検証が実行されていません（${changed}）。終える前に verify_gate の run ツール（または npm run verify）で検証してください。失敗した確認も隠さず記録します。${todo}`
+  const lines: string[] = []
+  if (!status.verified) {
+    const changed = status.changed.length > 0 ? `変更: ${status.changed.slice(0, 8).join(', ')}${status.changed.length > 8 ? ' ほか' : ''}` : '前回の検証のあとにコードが変わっています'
+    lines.push(`自動の検証（テスト、lint、型検査）が実行されていません（${changed}）。verify_gate の run ツール（または npm run verify）で実行してください。失敗した確認も隠さず記録します。`)
+  }
+  const due = dueItems(status)
+  if (due.length > 0) {
+    lines.push('次の手動の確認が必要です（該当するコードが変わっています）。実施したら、何をどの環境でどう確かめたかを verify_gate の stamp ツール（item を指定）で記録してください。実施できない場合は、その理由を記録してください。')
+    for (const item of due) {
+      const hint =
+        item.evidenceCommands.length > 0
+          ? `証拠になるコマンド: ${item.evidenceCommands.join(' / ')}（成功すると自動で実施済みになる）`
+          : item.evidenceFiles.length > 0
+            ? `証拠になるファイル: ${item.evidenceFiles.join(', ')}`
+            : '自己申告の記録になります'
+      lines.push(`- ${item.id}: ${item.title}（変更: ${item.changed.slice(0, 5).join(', ')}${item.changed.length > 5 ? ' ほか' : ''}。${hint}）`)
+    }
+  }
+  if (status.todo) lines.push(`そのうえで ${status.todo} の「動作確認の記録」に結果を書いてください。`)
+  return `verify-gate:\n${lines.join('\n')}`
 }
 
 function tail(text: string, lines = 30): string {
@@ -83,9 +124,30 @@ async function runVerification($: EngineInterface): Promise<{ exitCode: number; 
   const after = await refresh($)
   const summary =
     exitCode === 0
-      ? 'verify-gate: すべての検証に成功し、記録しました。'
-      : `verify-gate: 検証に失敗しました（終了コード ${exitCode}）。記録は更新していません。失敗を直すか、失敗したまま TODO に記録してください。`
-  return { exitCode, text: `${summary}\n${statusLine(after) ?? ''}\n\n${tail(stderr)}\n${tail(stdout)}`.trim() }
+      ? 'verify-gate: 自動の検証はすべて成功し、記録しました。'
+      : `verify-gate: 自動の検証に失敗しました（終了コード ${exitCode}）。記録は更新していません。失敗を直すか、失敗したまま TODO に記録してください。`
+  const remaining = isActive(after) && dueItems(after).length > 0 ? `\n手動の確認が未実施です: ${dueItems(after).map(item => `${item.id}（${item.title}）`).join('、')}` : ''
+  return { exitCode, text: `${summary}${remaining}\n${statusLine(after) ?? ''}\n\n${tail(stderr)}\n${tail(stdout)}`.trim() }
+}
+
+// 証拠になるコマンドが成功したら、該当する手動確認を証拠付きで実施済みにする。
+async function recordEvidence($: EngineInterface, command: string, status: Status): Promise<string[]> {
+  if (!isActive(status)) return []
+  const recorded: string[] = []
+  for (const item of dueItems(status)) {
+    if (!item.evidenceCommands.some(pattern => matches(command, pattern))) continue
+    const { exitCode } = await gate($, ['manual', item.id, '--by', 'evidence', '--reason', `コマンドの成功: ${command.slice(0, 200)}`])
+    if (exitCode === 0) recorded.push(item.id)
+  }
+  return recorded
+}
+
+function matches(command: string, pattern: string): boolean {
+  try {
+    return new RegExp(pattern).test(command)
+  } catch {
+    return command.includes(pattern)
+  }
 }
 
 export const register: Register = on => {
@@ -93,27 +155,30 @@ export const register: Register = on => {
     await $.tool.register({
       name: 'run',
       description:
-        'プロジェクトの .claude/verify-gate.json に書かれた検証コマンド（テスト、lint、型検査など）を順に実行し、すべて成功したら「検証済み」として記録する。コードを変えたあと、作業を終える前に呼ぶ。',
+        'プロジェクトの .claude/verify-gate.json に書かれた自動の検証コマンド（テスト、lint、型検査など）を順に実行し、すべて成功したら「検証済み」として記録する。コードを変えたあと、作業を終える前に呼ぶ。手動の確認は別に stamp で記録する。',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     })
     await $.tool.register({
       name: 'status',
-      description: 'verify-gate の現在の状態（検証済みか、前回の検証のあとに変わったコード、TODO の記録が未更新か）を返す。',
+      description: 'verify-gate の現在の状態（自動の検証が済んでいるか、未実施の手動確認とその対象、TODO の記録が未更新か）を返す。',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     })
     await $.tool.register({
       name: 'stamp',
       description:
-        '手で確かめた内容（画面の操作、インストールの確認など、コマンドで自動化できない検証）を、理由を添えて「検証済み」として記録する。自動の検証コマンドの代わりには使わない。',
+        '手動の確認（画面の操作、インストールの確認など、コマンドで自動化できない検証）を実施済みとして記録する。item に設定の manual の id を、reason に何をどの環境でどう確かめたかを書く。記録は自己申告として残る。item を省くと自動の検証を手動で記録するが、これは避ける。',
       inputSchema: {
         type: 'object',
-        properties: { reason: { type: 'string', description: '何をどの環境でどう確かめたか' } },
+        properties: {
+          item: { type: 'string', description: '手動確認の id（status の manual にある）' },
+          reason: { type: 'string', description: '何をどの環境でどう確かめたか。実施できない場合はその理由' },
+        },
         required: ['reason'],
         additionalProperties: false,
       },
     })
-    await $.command.register({ name: 'verify', description: 'verify-gate の検証コマンドを実行して記録する' })
-    await $.command.register({ name: 'verify-status', description: 'verify-gate の状態を表示する' })
+    await $.command.register({ name: 'verify', description: 'verify-gate の自動の検証を実行して記録する' })
+    await $.command.register({ name: 'verify-status', description: 'verify-gate の状態（自動の検証、手動の確認）を表示する' })
     const started = await next(e)
     await refresh($)
     // エディタなど外からの変更にも追いつくため、ときどき見直す。
@@ -136,13 +201,16 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'mcp__verify-gate__stamp' }, async ($, e) => {
-    const input = e as unknown as { reason?: unknown }
+    const input = e as unknown as { item?: unknown; reason?: unknown }
     const reason = typeof input.reason === 'string' ? input.reason : ''
+    const item = typeof input.item === 'string' ? input.item.trim() : ''
     if (!reason.trim()) return { deny: 'verify-gate: stamp には reason（何をどう確かめたか）が必要です' }
-    const { exitCode, stdout, stderr } = await gate($, ['stamp', '--reason', reason])
+    const args = item ? ['manual', item, '--reason', reason] : ['stamp', '--reason', reason]
+    const { exitCode, stdout, stderr } = await gate($, args)
     const after = await refresh($)
     if (exitCode !== 0) return { result: { text: `verify-gate: 記録できませんでした。${stderr || stdout}` }, isError: true as const }
-    return { result: { text: `verify-gate: 手動の確認を記録しました。${statusLine(after) ?? ''}` } }
+    const label = item ? `手動の確認 ${item} を自己申告として記録しました。` : '自動の検証を手動で記録しました（検証コマンドは実行していません）。'
+    return { result: { text: `verify-gate: ${label}${statusLine(after) ?? ''}` } }
   })
 
   on('command.run', { command: 'verify' }, async $ => {
@@ -159,39 +227,44 @@ export const register: Register = on => {
     }
   })
 
-  // コードの編集を見て状態を更新し、最初の一度だけモデルに検証を促す。
+  // コードの編集を見て状態を更新し、新しい未実施の状態になったときに一度だけモデルに指示する。
   on('classic.PostToolUse', async ($, e, next) => {
     const result = await next(e)
     if (!CODE_EDIT_TOOLS.has(e.tool_name)) return result
     const status = await refresh($)
-    if (!isActive(status) || status.verified) return result
-    if (instructedFor === status.codeHash) return result
-    instructedFor = status.codeHash
+    if (!isActive(status) || !status.outstanding) return result
+    const key = outstandingKey(status)
+    if (instructedFor === key) return result
+    instructedFor = key
     return { ...result, additionalContext: [...(result.additionalContext ?? []), instruction(status)] }
   })
 
-  // 未検証のままの git commit は、warn では注意、block では拒否する。実行後は状態を見直す。
+  // Bash: 未実施のままの git commit は warn で注意、block で拒否。証拠になるコマンドの成功は記録する。
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     if (COMMIT.test(e.command)) {
       const before = await refresh($)
-      if (isActive(before) && !before.verified) {
-        if (before.mode === 'block') return { deny: `verify-gate: 検証が未実行のためコミットを止めました。${instruction(before)}` }
-        $.ui.toast('verify-gate: 検証が未実行のままコミットしています', { timeoutMs: 8000 })
+      if (isActive(before) && before.outstanding) {
+        if (before.mode === 'block') return { deny: `verify-gate: 検証が未実施のためコミットを止めました。\n${instruction(before)}` }
+        $.ui.toast('verify-gate: 検証が未実施のままコミットしています', { timeoutMs: 8000 })
       }
     }
     const ran = await next(e)
+    if (ran.deny === undefined && ran.isError !== true) {
+      const recorded = await recordEvidence($, e.command, current)
+      if (recorded.length > 0) $.ui.toast(`verify-gate: 手動の確認 ${recorded.join(', ')} を証拠付きで実施済みにしました`, { timeoutMs: 6000 })
+    }
     void refresh($)
     return ran
   }).catch(($, e, next) => next(e))
 
-  // ターンの終わり。warn では注意を出すだけ、block では終了を止めて検証を求める。
+  // ターンの終わり。warn では注意を出すだけ、block では終了を止めて実施を求める。
   on('classic.Stop', async ($, e, next) => {
     const result = await next(e)
     if (e.stop_hook_active) return result
     const status = await refresh($)
-    if (!isActive(status) || status.verified) return result
+    if (!isActive(status) || !status.outstanding) return result
     if (status.mode === 'block') return { ...result, block: instruction(status) }
-    $.ui.toast(`verify-gate: 検証が未実行のままターンが終わりました（${statusLine(status) ?? ''}）`, { timeoutMs: 10_000 })
+    $.ui.toast(`verify-gate: 未実施のままターンが終わりました（${statusLine(status) ?? ''}）`, { timeoutMs: 10_000 })
     return result
   })
 }
