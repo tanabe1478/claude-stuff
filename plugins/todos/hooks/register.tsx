@@ -233,55 +233,58 @@ export const register: Register = on => {
     const { Box, Button, Text } = table
     // mobile には Input がないため、そこでは検索欄を出さない。
     const Input = 'Input' in table ? table.Input : null
-    const current = (await read($, view)) ?? { query: '', showDone: false }
-    await read($, refresh)
-    const words = current.query.toLowerCase().split(/\s+/).filter(Boolean)
-    const shown = cache.filter(todo => {
-      if (!current.showDone && todo.status === 'done') return false
-      if (words.length === 0) return true
-      const haystack = `${todo.id} ${todo.title} ${todo.tags.map(tag => `#${tag}`).join(' ')} ${todo.body}`.toLowerCase()
-      return words.every(word => haystack.includes(word))
-    })
-    const room = Math.max(3, Math.floor(((e.viewport?.rows ?? 30) - 8) / 2))
-    const act = (args: string[]) => async () => {
-      await cli($, args)
-      await reload($)
-    }
-    return (
-      <Box flexDirection="column" gap={1}>
-        <Box gap={1} flexWrap="wrap">
-          <Text bold>Todo</Text>
-          <Text dimColor>
-            未完了 {summary.open} / 進行中 {summary.inProgress} / 完了 {summary.done}
-          </Text>
-          <Button key="toggle-done" label={current.showDone ? '完了を隠す' : '完了も表示'} onPress={() => update($, view, v => ({ ...(v ?? current), showDone: !(v ?? current).showDone }))} />
-        </Box>
-        {Input && (
-          <Input key="query" label="検索" placeholder="題名、タグ、本文で絞る" value={current.query} onSubmit={(value: string) => update($, view, v => ({ ...(v ?? current), query: value }))} />
-        )}
-        {shown.length === 0 && <Text dimColor>該当する Todo はありません。/todo &lt;題名&gt; か todo ツールで追加できます。</Text>}
-        {shown.slice(0, room).map(todo => (
-          <Box key={`row-${todo.id}`} flexDirection="column">
-            <Text dimColor={todo.status === 'done'} strikethrough={todo.status === 'done'}>
-              {line(todo)}
+    try {
+      const current = (await read($, view)) ?? { query: '', showDone: false }
+      await read($, refresh)
+      const words = current.query.toLowerCase().split(/s+/).filter(Boolean)
+      const shown = cache.filter(todo => {
+        if (!current.showDone && todo.status === 'done') return false
+        if (words.length === 0) return true
+        const haystack = `${todo.id} ${todo.title} ${todo.tags.map(tag => `#${tag}`).join(' ')} ${todo.body}`.toLowerCase()
+        return words.every(word => haystack.includes(word))
+      })
+      const room = Math.max(3, Math.floor(((e.viewport?.rows ?? 30) - 8) / 2))
+      const act = (args: string[]) => async () => {
+        await cli($, args)
+        await reload($)
+      }
+      return (
+        <Box flexDirection="column">
+          <Box>
+            <Text bold>Todo </Text>
+            <Text dimColor>
+              未完了 {summary.open} / 進行中 {summary.inProgress} / 完了 {summary.done}{' '}
             </Text>
-            <Box gap={1} flexWrap="wrap">
-              {todo.status === 'open' && <Button key={`start-${todo.id}`} label="着手" onPress={act(['update', todo.id, '--status', 'in_progress', '--assign', sessionId])} />}
-              {todo.status !== 'done' && <Button key={`done-${todo.id}`} label="完了" variant="primary" onPress={act(['done', todo.id, '--append', '/todos の画面で完了にした'])} />}
-              {todo.status === 'in_progress' && <Button key={`open-${todo.id}`} label="未着手に戻す" onPress={act(['update', todo.id, '--status', 'open'])} />}
-              {todo.status === 'done' && <Button key={`reopen-${todo.id}`} label="再開" onPress={act(['update', todo.id, '--status', 'open'])} />}
-              {todo.status !== 'done' &&
-                (todo.assigned_to_session === sessionId ? (
-                  <Button key={`unassign-${todo.id}`} label="担当を外す" onPress={act(['update', todo.id, '--assign', 'none'])} />
-                ) : (
-                  <Button key={`assign-${todo.id}`} label="このセッションの担当にする" onPress={act(['update', todo.id, '--assign', sessionId])} />
-                ))}
-            </Box>
+            <Button key="toggle-done" label={current.showDone ? '完了を隠す' : '完了も表示'} onPress={() => update($, view, v => ({ ...(v ?? current), showDone: !(v ?? current).showDone }))} />
           </Box>
-        ))}
-        {shown.length > room && <Text dimColor>ほか {shown.length - room} 件。検索で絞ってください。</Text>}
-      </Box>
-    )
+          {Input && (
+            <Input key="query" placeholder="検索（題名、タグ、本文）" value={current.query} onSubmit={(value: string) => update($, view, v => ({ ...(v ?? current), query: value }))} />
+          )}
+          {shown.length === 0 && <Text dimColor>該当する Todo はありません。/todo &lt;題名&gt; か todo ツールで追加できます。</Text>}
+          {shown.slice(0, room).map(todo => (
+            <Box key={`row-${todo.id}`} flexDirection="column" marginTop={1}>
+              <Text dimColor={todo.status === 'done'}>{line(todo)}</Text>
+              <Box>
+                {todo.status === 'open' && <Button key={`start-${todo.id}`} label="着手" onPress={act(['update', todo.id, '--status', 'in_progress', '--assign', sessionId])} />}
+                {todo.status !== 'done' && <Button key={`done-${todo.id}`} label="完了" variant="primary" onPress={act(['done', todo.id, '--append', '/todos の画面で完了にした'])} />}
+                {todo.status === 'in_progress' && <Button key={`open-${todo.id}`} label="未着手に戻す" onPress={act(['update', todo.id, '--status', 'open'])} />}
+                {todo.status === 'done' && <Button key={`reopen-${todo.id}`} label="再開" onPress={act(['update', todo.id, '--status', 'open'])} />}
+                {todo.status !== 'done' &&
+                  (todo.assigned_to_session === sessionId ? (
+                    <Button key={`unassign-${todo.id}`} label="担当を外す" onPress={act(['update', todo.id, '--assign', 'none'])} />
+                  ) : (
+                    <Button key={`assign-${todo.id}`} label="このセッションの担当にする" onPress={act(['update', todo.id, '--assign', sessionId])} />
+                  ))}
+              </Box>
+            </Box>
+          ))}
+          {shown.length > room && <Text dimColor>ほか {shown.length - room} 件。検索で絞ってください。</Text>}
+        </Box>
+      )
+    } catch (error) {
+      // 描画の途中で失敗したときは、閉じてしまわずに理由を見せる。
+      return <Text color="red">todos: 一覧を描けませんでした: {error instanceof Error ? error.message : String(error)}</Text>
+    }
   })
 
   // ターンの終わりに、このセッションが担当する進行中の Todo があれば知らせる。

@@ -1,6 +1,6 @@
 {
   "name": "todos",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "依頼されたことや確認すべきことを Todo として残し、/todos の画面と AI 向けの todo ツールで扱う",
   "author": {
     "name": "tanabe1478",
